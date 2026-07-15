@@ -56,9 +56,14 @@ targets:
         UILaunchScreen:
           UIColorName: ""
 
-        # 対応向き
+        # iPhone は portrait 縦のみ、iPad は 4 方向対応 (Validate で警告が出ないように)
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        "UISupportedInterfaceOrientations~ipad":
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
 
     settings:
       base:
