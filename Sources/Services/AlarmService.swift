@@ -55,20 +55,20 @@ final class AlarmService {
     /// アプリ側の AlarmItem 一覧を AlarmKit にまるごと反映する。
     /// 既存の AlarmKit 登録は「アプリで無効化された/削除された分」だけ解除する。
     func syncSchedule(with items: [AlarmItem]) async {
-        // 現状の登録一覧
-        let existing = manager.alarms.map { $0.id }
+        // 現状の登録一覧 (AlarmManager.alarms は throws プロパティ)
+        let existing = ((try? manager.alarms) ?? []).map { $0.id }
         let desiredEnabled = items.filter { $0.enabled }
         let desiredIds = Set(desiredEnabled.map { $0.id })
 
-        // 消えた or 無効化されたものを stop
+        // 消えた or 無効化されたものを stop (stop は 同期 throws)
         for id in existing where !desiredIds.contains(id) {
-            try? await manager.stop(id: id)
+            try? manager.stop(id: id)
         }
 
         // 有効なアラームを (idempotent に) 登録
         for item in desiredEnabled {
             do {
-                try await schedule(item)
+                try schedule(item)
             } catch {
                 debugPrint("AlarmKit schedule failed for \(item.id): \(error)")
             }
@@ -76,7 +76,8 @@ final class AlarmService {
     }
 
     /// 1件を AlarmKit に登録。既存 ID があれば内部で置き換わる想定 (再登録 = 更新)。
-    func schedule(_ item: AlarmItem) async throws {
+    /// AlarmManager.schedule / stop はいずれも同期 throws。
+    func schedule(_ item: AlarmItem) throws {
         let alarmSchedule = Self.buildAlarmKitSchedule(from: item)
 
         let stopButton = AlarmButton(
@@ -111,16 +112,18 @@ final class AlarmService {
             secondaryIntent: OpenAndPlayIntent(alarmID: item.id.uuidString)
         )
 
-        try await manager.schedule(id: item.id, configuration: configuration)
+        // schedule は戻り値 (Alarm) を返すが、こちらでは使わない。
+        _ = try manager.schedule(id: item.id, configuration: configuration)
     }
 
-    func cancel(id: UUID) async {
-        try? await manager.stop(id: id)
+    func cancel(id: UUID) {
+        try? manager.stop(id: id)
     }
 
-    func cancelAll() async {
-        for a in manager.alarms {
-            try? await manager.stop(id: a.id)
+    func cancelAll() {
+        let current = (try? manager.alarms) ?? []
+        for a in current {
+            try? manager.stop(id: a.id)
         }
     }
 
