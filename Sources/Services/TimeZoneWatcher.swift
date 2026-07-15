@@ -71,7 +71,9 @@ final class TimeZoneWatcher {
     // MARK: - BGAppRefreshTask (層 2)
 
     /// アプリ起動時に 1 度だけ呼ぶ。BGTaskScheduler にハンドラを登録する。
-    func registerBackgroundTask() {
+    /// `@main App.init()` から呼べるように `nonisolated static` にしている。
+    /// 内部で Task { @MainActor in } を使って shared にアクセスする。
+    nonisolated static func registerBackgroundTask() {
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: Self.bgTaskIdentifier,
             using: nil
@@ -81,7 +83,7 @@ final class TimeZoneWatcher {
                 return
             }
             Task { @MainActor in
-                self.handleBackgroundRefresh(task: refreshTask)
+                Self.shared.handleBackgroundRefresh(task: refreshTask)
             }
         }
     }
