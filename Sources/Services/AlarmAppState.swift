@@ -61,7 +61,9 @@ final class AlarmAppState: ObservableObject {
     /// AlarmKit 側で .alerting になっているアラームがあれば、対応する AlarmItem を
     /// ringingAlarm に立てる → RingingView が sheet で表示される。
     func checkAlerting() {
-        let alerting = AlarmManager.shared.alarms.first { alarm in
+        // AlarmManager.alarms は throws プロパティ
+        let currentAlarms = (try? AlarmManager.shared.alarms) ?? []
+        let alerting = currentAlarms.first { alarm in
             alarm.state == .alerting
         }
         guard let alerting else {
@@ -87,10 +89,8 @@ final class AlarmAppState: ObservableObject {
 
         guard let item = alarms.first(where: { $0.id == uuid }) else { return }
 
-        // AlarmKit 側のアラート状態を stop する (音楽で置き換えるため)
-        Task {
-            try? await AlarmManager.shared.stop(id: item.id)
-        }
+        // AlarmKit 側のアラート状態を stop する (音楽で置き換えるため)。stop は同期 throws。
+        try? AlarmManager.shared.stop(id: item.id)
 
         // 音楽再生開始
         _ = audio.playRandom(
@@ -114,7 +114,7 @@ final class AlarmAppState: ObservableObject {
 
     func delete(_ id: UUID) {
         alarms.removeAll { $0.id == id }
-        Task { await alarmService.cancel(id: id) }
+        alarmService.cancel(id: id)
         persistAndSync()
     }
 
@@ -134,7 +134,7 @@ final class AlarmAppState: ObservableObject {
     func stopRinging() {
         audio.stop()
         if let a = ringingAlarm {
-            Task { try? await AlarmManager.shared.stop(id: a.id) }
+            try? AlarmManager.shared.stop(id: a.id)
         }
         ringingAlarm = nil
     }
@@ -143,7 +143,7 @@ final class AlarmAppState: ObservableObject {
     func snoozeRinging() {
         guard let a = ringingAlarm else { return }
         audio.stop()
-        Task { try? await AlarmManager.shared.stop(id: a.id) }
+        try? AlarmManager.shared.stop(id: a.id)
 
         let snoozeDate = Date().addingTimeInterval(TimeInterval(a.snoozeMinutes * 60))
         let snoozeItem = AlarmItem(
