@@ -62,7 +62,7 @@ final class AlarmService {
 
         // 消えた or 無効化されたものを stop
         for id in existing where !desiredIds.contains(id) {
-            try? await manager.cancel(id: id)
+            try? await manager.stop(id: id)
         }
 
         // 有効なアラームを (idempotent に) 登録
@@ -115,12 +115,12 @@ final class AlarmService {
     }
 
     func cancel(id: UUID) async {
-        try? await manager.cancel(id: id)
+        try? await manager.stop(id: id)
     }
 
     func cancelAll() async {
         for a in manager.alarms {
-            try? await manager.cancel(id: a.id)
+            try? await manager.stop(id: a.id)
         }
     }
 
@@ -137,7 +137,19 @@ final class AlarmService {
                 hour: item.hour,
                 minute: item.minute
             )
-            let weekdays = days.compactMap { Locale.Weekday.fromIsoWeekday($0) }
+            // ISO 曜日 (1=月...7=日) → Locale.Weekday
+            let weekdays: [Locale.Weekday] = days.compactMap { d in
+                switch d {
+                case 1: return .monday
+                case 2: return .tuesday
+                case 3: return .wednesday
+                case 4: return .thursday
+                case 5: return .friday
+                case 6: return .saturday
+                case 7: return .sunday
+                default: return nil
+                }
+            }
             let recurrence: Alarm.Schedule.Relative.Recurrence = weekdays.isEmpty
                 ? .never
                 : .weekly(weekdays)
@@ -149,24 +161,6 @@ final class AlarmService {
             // AlarmKit `.fixed(Date)` は UTC 絶対時刻として保存される。
             // TimeZoneWatcher が TZ 変更を検知したら再スケジュールをかける。
             return .fixed(date)
-        }
-    }
-}
-
-// MARK: - Locale.Weekday 変換
-
-private extension Locale.Weekday {
-    /// 1=月 ... 7=日 の ISO 曜日番号を Locale.Weekday に変換。
-    static func fromIsoWeekday(_ n: Int) -> Locale.Weekday? {
-        switch n {
-        case 1: return .monday
-        case 2: return .tuesday
-        case 3: return .wednesday
-        case 4: return .thursday
-        case 5: return .friday
-        case 6: return .saturday
-        case 7: return .sunday
-        default: return nil
         }
     }
 }
