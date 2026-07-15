@@ -1,0 +1,69 @@
+# xcodegen 用プロジェクト定義。
+# CI で `xcodegen generate` を叩くと AlarmClock.xcodeproj が生成される。
+# ゆえに ios/*.xcodeproj や *.xcworkspace はコミット不要 (flutter create と同発想)。
+
+name: AlarmClock
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGN_IDENTITY: ""
+
+targets:
+  AlarmClock:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Sources
+    resources:
+      - path: Resources
+        excludes:
+          - Info.plist
+    info:
+      path: Resources/Info.plist
+      properties:
+        # AlarmKit 権限リクエスト時に表示される説明文 (iOS 26+ 必須)
+        NSAlarmKitUsageDescription: "指定時刻に目覚ましを鳴らすためにアラーム機能を使用します。"
+
+        # ファイルアプリからアプリ Documents に音楽ファイルを配置できるようにする
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+
+        # バックグラウンド音楽再生 + BGAppRefresh (TZ 補正用)
+        UIBackgroundModes:
+          - audio
+          - fetch
+          - processing
+
+        # BGAppRefreshTask 識別子
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.example.alarmclock.tz-recheck
+
+        # 表示名 / バンドル情報
+        CFBundleDisplayName: Alarm Clock
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        UILaunchScreen:
+          UIColorName: ""
+
+        # 対応向き
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.alarmclock
+        PRODUCT_NAME: AlarmClock
+        TARGETED_DEVICE_FAMILY: "1,2"  # iPhone + iPad
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        ENABLE_PREVIEWS: YES
