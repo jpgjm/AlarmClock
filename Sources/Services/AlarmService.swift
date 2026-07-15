@@ -68,7 +68,7 @@ final class AlarmService {
         // 有効なアラームを (idempotent に) 登録
         for item in desiredEnabled {
             do {
-                try schedule(item)
+                try await schedule(item)
             } catch {
                 debugPrint("AlarmKit schedule failed for \(item.id): \(error)")
             }
@@ -76,8 +76,9 @@ final class AlarmService {
     }
 
     /// 1件を AlarmKit に登録。既存 ID があれば内部で置き換わる想定 (再登録 = 更新)。
-    /// AlarmManager.schedule / stop はいずれも同期 throws。
-    func schedule(_ item: AlarmItem) throws {
+    /// AlarmManager.schedule は `async throws -> Alarm`、
+    /// AlarmManager.stop は同期 throws。
+    func schedule(_ item: AlarmItem) async throws {
         let alarmSchedule = Self.buildAlarmKitSchedule(from: item)
 
         let stopButton = AlarmButton(
@@ -113,7 +114,7 @@ final class AlarmService {
         )
 
         // schedule は戻り値 (Alarm) を返すが、こちらでは使わない。
-        _ = try manager.schedule(id: item.id, configuration: configuration)
+        _ = try await manager.schedule(id: item.id, configuration: configuration)
     }
 
     func cancel(id: UUID) {
