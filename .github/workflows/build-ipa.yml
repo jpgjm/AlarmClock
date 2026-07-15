@@ -1,0 +1,98 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Xcode 26 (iOS 26 SDK) を選ぶ。macos-latest に入っていない場合は失敗するので
+      # その場合はランナーを xcode-26 対応版に切り替える必要がある。
+      - name: Select Xcode 26 (best effort)
+        run: |
+          echo "=== Available Xcodes ==="
+          ls -la /Applications | grep -i xcode || true
+          # 26.x があれば選ぶ、無ければ現行の DEVELOPER_DIR のまま
+          for X in $(ls /Applications | grep -E '^Xcode_?26' || true); do
+            APP="/Applications/$X/Contents/Developer"
+            if [ -d "$APP" ]; then
+              sudo xcode-select -s "$APP"
+              echo "Selected: $APP"
+              break
+            fi
+          done
+          xcodebuild -version
+
+      - name: Install xcodegen
+        run: |
+          brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          xcodegen generate
+          ls -la
+          test -d AlarmClock.xcodeproj && echo "OK" || (echo "xcodeproj not generated"; exit 1)
+
+      - name: Build (no codesign)
+        id: build
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project AlarmClock.xcodeproj \
+            -scheme AlarmClock \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            2>&1 | tee /tmp/xcodebuild.log
+
+      - name: Show build log tail
+        if: always()
+        run: |
+          echo "=== Last 150 lines ==="
+          tail -150 /tmp/xcodebuild.log || true
+
+      - name: Locate .app
+        id: locate
+        run: |
+          APP=$(find build -name "AlarmClock.app" -type d | head -1)
+          if [ -z "$APP" ] || [ ! -d "$APP" ]; then
+            echo "::error::AlarmClock.app が見つかりません"
+            exit 1
+          fi
+          echo "app_path=$APP" >> "$GITHUB_OUTPUT"
+          echo "=== Using: $APP ==="
+          ls -la "$APP"
+
+      - name: Package IPA (dummy folder trick)
+        run: |
+          mkdir -p dummy Payload
+          cp -R "${{ steps.locate.outputs.app_path }}" Payload/
+          zip -r dummy/alarm_clock.ipa Payload
+          rm -rf Payload
+          ls -lh dummy/alarm_clock.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: alarm-clock-ipa
+          path: dummy/
+
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: /tmp/xcodebuild.log
