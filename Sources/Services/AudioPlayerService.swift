@@ -194,19 +194,27 @@ final class AudioPlayerService: ObservableObject {
         }
     }
 
+    private var fadeStepIndex: Int = 0
+    private var fadeTotalSteps: Int = 1
+
     private func startFadeIn(seconds: Int) {
         fadeTimer?.invalidate()
         let stepInterval: TimeInterval = 0.2
-        let totalSteps = max(1, Int(Double(seconds) / stepInterval))
-        var stepIndex = 0
+        fadeTotalSteps = max(1, Int(Double(seconds) / stepInterval))
+        fadeStepIndex = 0
+        // Timer.scheduledTimer のクロージャは @Sendable @escaping で、Swift 6 では
+        // MainActor 隔離のプロパティを直接触れない。Timer は main run loop で発火するため
+        // `MainActor.assumeIsolated` で安全に main actor コンテキストに入る。
         fadeTimer = Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { [weak self] t in
-            guard let self else { t.invalidate(); return }
-            stepIndex += 1
-            let v = Float(stepIndex) / Float(totalSteps) * self.targetVolume
-            self.queuePlayer?.volume = min(self.targetVolume, v)
-            if stepIndex >= totalSteps {
-                t.invalidate()
-                self.fadeTimer = nil
+            MainActor.assumeIsolated {
+                guard let self else { t.invalidate(); return }
+                self.fadeStepIndex += 1
+                let v = Float(self.fadeStepIndex) / Float(self.fadeTotalSteps) * self.targetVolume
+                self.queuePlayer?.volume = min(self.targetVolume, v)
+                if self.fadeStepIndex >= self.fadeTotalSteps {
+                    t.invalidate()
+                    self.fadeTimer = nil
+                }
             }
         }
     }
