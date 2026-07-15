@@ -1,0 +1,238 @@
+//
+//  AudioPlayerService.swift
+//  AlarmClock
+//
+//  指定フォルダ (or Documents 直下) から .flac / .mp3 / .aac / .wav / .m4a を
+//  再帰走査してシャッフル → AVQueuePlayer で連続再生する。
+//  フェードインは Timer で volume を線形に上げていく。
+//
+//  バックグラウンド再生と、他アプリの音楽より優先して鳴らす目的で
+//  AVAudioSession は .playback + .mixWithOthers 無し (= 割り込み) で設定する。
+//
+
+import AVFoundation
+import Combine
+import Foundation
+
+@MainActor
+final class AudioPlayerService: ObservableObject {
+
+    static let shared = AudioPlayerService()
+
+    private let audioExtensions: Set<String> = ["flac", "mp3", "aac", "wav", "m4a"]
+
+    private var queuePlayer: AVQueuePlayer?
+    private var itemsBackup: [AVPlayerItem] = []  // ループ用に元リストを保持
+    private var endObserver: NSObjectProtocol?
+
+    @Published private(set) var isPlaying: Bool = false
+    @Published private(set) var currentTitle: String = ""
+    @Published private(set) var currentArtist: String = ""
+
+    private var fadeTimer: Timer?
+    private var targetVolume: Float = 1.0
+
+    // MARK: - オーディオセッション
+
+    private func activateAudioSession() throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playback,
+                                mode: .default,
+                                options: [.duckOthers])
+        try session.setActive(true, options: [])
+    }
+
+    private func deactivateAudioSession() {
+        try? AVAudioSession.sharedInstance()
+            .setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    // MARK: - ファイル列挙
+
+    private func documentsURL() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+
+    /// 指定フォルダ配下 (再帰) の対応音声ファイル URL 一覧。
+    func collectAudioFiles(folderRelPath: String?) -> [URL] {
+        let root = documentsURL()
+        let target: URL
+        if let rel = folderRelPath, !rel.isEmpty {
+            target = root.appendingPathComponent(rel)
+        } else {
+            target = root
+        }
+
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isDir),
+              isDir.boolValue else {
+            return []
+        }
+
+        let keys: [URLResourceKey] = [.isRegularFileKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: target,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles],
+            errorHandler: { _, _ in true }
+        ) else {
+            return []
+        }
+
+        var out: [URL] = []
+        for case let url as URL in enumerator {
+            let ext = url.pathExtension.lowercased()
+            if audioExtensions.contains(ext) {
+                out.append(url)
+            }
+        }
+        return out
+    }
+
+    // MARK: - 再生制御
+
+    /// 指定フォルダの音楽をシャッフル → 連続再生。
+    /// - Returns: 再生対象のファイル数
+    @discardableResult
+    func playRandom(folderRelPath: String?,
+                    volume: Double,
+                    fadeInSeconds: Int) -> Int {
+        stop()  // 既存再生を止める
+
+        var files = collectAudioFiles(folderRelPath: folderRelPath)
+        guard !files.isEmpty else { return 0 }
+        files.shuffle()
+
+        do {
+            try activateAudioSession()
+        } catch {
+            debugPrint("AVAudioSession activate failed: \(error)")
+        }
+
+        let items = files.map { AVPlayerItem(url: $0) }
+        itemsBackup = items
+        let player = AVQueuePlayer(items: items)
+        player.actionAtItemEnd = .advance
+        queuePlayer = player
+
+        targetVolume = Float(max(0, min(1, volume)))
+
+        // 最後の曲が終わったらキューを再構築してループ
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            Task { @MainActor in
+                self?.handleItemEnd(note)
+            }
+        }
+
+        // 現在曲のタイトルを反映
+        observeCurrent()
+
+        if fadeInSeconds > 0 {
+            player.volume = 0
+            player.play()
+            startFadeIn(seconds: fadeInSeconds)
+        } else {
+            player.volume = targetVolume
+            player.play()
+        }
+
+        isPlaying = true
+        return files.count
+    }
+
+    private func handleItemEnd(_ note: Notification) {
+        guard let player = queuePlayer else { return }
+        // 全曲終了時はループとして itemsBackup を再度シャッフルして詰め直す
+        if player.items().isEmpty {
+            var next = itemsBackup.map { AVPlayerItem(asset: $0.asset) }
+            next.shuffle()
+            for item in next {
+                player.insert(item, after: nil)
+            }
+            player.play()
+        }
+        observeCurrent()
+    }
+
+    private func observeCurrent() {
+        guard let asset = queuePlayer?.currentItem?.asset as? AVURLAsset else {
+            currentTitle = ""
+            currentArtist = ""
+            return
+        }
+        // 高速: URL 名前をそのまま表示 (メタデータ非同期読みは重い)
+        currentTitle = asset.url.deletingPathExtension().lastPathComponent
+        currentArtist = ""
+
+        // タグから取れるなら差し替える (非同期)
+        Task { [weak self] in
+            do {
+                let metas = try await asset.load(.commonMetadata)
+                var title: String?
+                var artist: String?
+                for m in metas {
+                    switch m.commonKey {
+                    case .commonKeyTitle:
+                        if let s = try? await m.load(.stringValue) { title = s }
+                    case .commonKeyArtist:
+                        if let s = try? await m.load(.stringValue) { artist = s }
+                    default:
+                        break
+                    }
+                }
+                await MainActor.run {
+                    if let t = title, !t.isEmpty { self?.currentTitle = t }
+                    if let a = artist { self?.currentArtist = a }
+                }
+            } catch {
+                // 何もしない: ファイル名フォールバックのまま
+            }
+        }
+    }
+
+    private func startFadeIn(seconds: Int) {
+        fadeTimer?.invalidate()
+        let stepInterval: TimeInterval = 0.2
+        let totalSteps = max(1, Int(Double(seconds) / stepInterval))
+        var stepIndex = 0
+        fadeTimer = Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            stepIndex += 1
+            let v = Float(stepIndex) / Float(totalSteps) * self.targetVolume
+            self.queuePlayer?.volume = min(self.targetVolume, v)
+            if stepIndex >= totalSteps {
+                t.invalidate()
+                self.fadeTimer = nil
+            }
+        }
+    }
+
+    /// スライダー等でユーザーが音量を変更した時。フェードインは中断する。
+    func setVolume(_ v: Double) {
+        fadeTimer?.invalidate()
+        fadeTimer = nil
+        targetVolume = Float(max(0, min(1, v)))
+        queuePlayer?.volume = targetVolume
+    }
+
+    func stop() {
+        fadeTimer?.invalidate()
+        fadeTimer = nil
+        queuePlayer?.pause()
+        queuePlayer?.removeAllItems()
+        queuePlayer = nil
+        itemsBackup = []
+        if let o = endObserver {
+            NotificationCenter.default.removeObserver(o)
+            endObserver = nil
+        }
+        isPlaying = false
+        currentTitle = ""
+        currentArtist = ""
+        deactivateAudioSession()
+    }
+}
