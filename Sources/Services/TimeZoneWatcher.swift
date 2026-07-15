@@ -24,7 +24,9 @@ import UIKit
 final class TimeZoneWatcher {
     static let shared = TimeZoneWatcher()
 
-    static let bgTaskIdentifier = "com.example.alarmclock.tz-recheck"
+    /// nonisolated にしておくと `registerBackgroundTask()` (nonisolated static) から
+    /// 参照できる。定数なので isolation を外しても安全。
+    nonisolated static let bgTaskIdentifier = "com.example.alarmclock.tz-recheck"
 
     /// TZ が変わったと判定したら呼ばれる。呼び側で AlarmService.syncSchedule() を叩く想定。
     var onTimeZoneChanged: (() -> Void)?
