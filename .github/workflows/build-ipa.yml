@@ -13,14 +13,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Xcode 26 (iOS 26 SDK) を選ぶ。macos-latest に入っていない場合は失敗するので
-      # その場合はランナーを xcode-26 対応版に切り替える必要がある。
-      - name: Select Xcode 26 (best effort)
+      # Xcode 26 (iOS 26 SDK) を選ぶ。なければ最新の Xcode をベストエフォートで採用し、
+      # そのバージョンをログに出す。 iOS 26 以降でないと AlarmKit がリンクできないので
+      # 「Verify Xcode 26+」ステップで厳密チェックする。
+      - name: Select newest Xcode available
         run: |
           echo "=== Available Xcodes ==="
           ls -la /Applications | grep -i xcode || true
-          # 26.x があれば選ぶ、無ければ現行の DEVELOPER_DIR のまま
-          for X in $(ls /Applications | grep -E '^Xcode_?26' || true); do
+          # 高いバージョンから順に試す
+          for X in $(ls /Applications | grep -E '^Xcode' | sort -V -r); do
             APP="/Applications/$X/Contents/Developer"
             if [ -d "$APP" ]; then
               sudo xcode-select -s "$APP"
@@ -29,6 +30,17 @@ jobs:
             fi
           done
           xcodebuild -version
+
+      - name: Verify Xcode 26+ (AlarmKit requires iOS 26 SDK)
+        run: |
+          VERSION_LINE=$(xcodebuild -version | head -1)
+          echo "$VERSION_LINE"
+          MAJOR=$(echo "$VERSION_LINE" | awk '{print $2}' | awk -F. '{print $1}')
+          if [ -z "$MAJOR" ] || [ "$MAJOR" -lt 26 ]; then
+            echo "::error::Xcode 26 or newer is required (found: $VERSION_LINE)."
+            echo "::error::AlarmKit is not available in earlier Xcodes; build cannot proceed."
+            exit 1
+          fi
 
       - name: Install xcodegen
         run: |
@@ -40,9 +52,9 @@ jobs:
           ls -la
           test -d AlarmClock.xcodeproj && echo "OK" || (echo "xcodeproj not generated"; exit 1)
 
+      # continue-on-error は使わない。失敗したらここで止める。
+      # pipefail + tee でログは /tmp/xcodebuild.log に常時保存。
       - name: Build (no codesign)
-        id: build
-        continue-on-error: true
         run: |
           set -o pipefail
           xcodebuild \
@@ -61,38 +73,63 @@ jobs:
       - name: Show build log tail
         if: always()
         run: |
-          echo "=== Last 150 lines ==="
-          tail -150 /tmp/xcodebuild.log || true
+          echo "=== Last 200 lines of xcodebuild log ==="
+          tail -200 /tmp/xcodebuild.log || true
 
-      - name: Locate .app
+      # 成功時のログも見たいので常時アップロード。エラー原因の追跡に必須。
+      - name: Upload xcodebuild log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: /tmp/xcodebuild.log
+          if-no-files-found: warn
+
+      - name: Locate .app and verify binary
         id: locate
         run: |
           APP=$(find build -name "AlarmClock.app" -type d | head -1)
           if [ -z "$APP" ] || [ ! -d "$APP" ]; then
             echo "::error::AlarmClock.app が見つかりません"
+            find build -maxdepth 6 -name "*.app" -type d || true
             exit 1
           fi
-          echo "app_path=$APP" >> "$GITHUB_OUTPUT"
+
           echo "=== Using: $APP ==="
           ls -la "$APP"
+          echo "Total size: $(du -sh "$APP" | cut -f1)"
 
-      - name: Package IPA (dummy folder trick)
+          # コンパイル失敗時に空の .app が Copy Resource だけで作られるのを検知する。
+          if [ ! -f "$APP/AlarmClock" ]; then
+            echo "::error::AlarmClock 実行ファイルが .app 内に無い (コンパイル/リンク失敗)"
+            echo "=== .app contents ==="
+            ls -la "$APP"
+            exit 1
+          fi
+
+          BIN_SIZE=$(stat -f %z "$APP/AlarmClock" 2>/dev/null || stat -c %s "$APP/AlarmClock")
+          echo "AlarmClock binary size: $BIN_SIZE bytes"
+          # 500KB 未満は明らかにおかしい (空バイナリの疑い)
+          if [ "$BIN_SIZE" -lt 500000 ]; then
+            echo "::error::AlarmClock binary is suspiciously small ($BIN_SIZE bytes)"
+            file "$APP/AlarmClock" || true
+            exit 1
+          fi
+
+          echo "app_path=$APP" >> "$GITHUB_OUTPUT"
+
+      - name: Package IPA
         run: |
           mkdir -p dummy Payload
           cp -R "${{ steps.locate.outputs.app_path }}" Payload/
           zip -r dummy/alarm_clock.ipa Payload
           rm -rf Payload
+          echo "=== IPA info ==="
           ls -lh dummy/alarm_clock.ipa
+          unzip -l dummy/alarm_clock.ipa | tail -3
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: alarm-clock-ipa
           path: dummy/
-
-      - name: Upload build log (on failure)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: xcodebuild-log
-          path: /tmp/xcodebuild.log
