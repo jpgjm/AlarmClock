@@ -29,8 +29,6 @@ final class AlarmAppState: ObservableObject {
     private let audio = AudioPlayerService.shared
     private let tzWatcher = TimeZoneWatcher.shared
 
-    private var alarmsObserver: AnyCancellable?
-
     // MARK: - Init / Bootstrap
 
     func bootstrap() async {
@@ -52,22 +50,12 @@ final class AlarmAppState: ObservableObject {
         tzWatcher.startObserving()
         tzWatcher.scheduleNextBackgroundRefresh()
 
-        // AlarmKit の alarms 変更を購読 (state == .alerting になった時に検出)
-        subscribeAlarmKit()
+        // 発火中アラームは scenePhase active の時に checkAlerting() で拾う
+        // (AlarmClockApp.swift 側で onChange を仕込んでいる)。
+        checkAlerting()
 
         // 音楽ボタン (OpenAndPlayIntent) 起動時の pending をチェック
         checkPendingPlayback()
-    }
-
-    private func subscribeAlarmKit() {
-        // AlarmManager.shared.alarmUpdates は AsyncSequence
-        Task { [weak self] in
-            for await _ in AlarmManager.shared.alarmUpdates {
-                await MainActor.run {
-                    self?.checkAlerting()
-                }
-            }
-        }
     }
 
     /// AlarmKit 側で .alerting になっているアラームがあれば、対応する AlarmItem を
