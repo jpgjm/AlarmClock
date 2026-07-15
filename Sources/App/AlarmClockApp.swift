@@ -19,7 +19,8 @@ struct AlarmClockApp: App {
 
     init() {
         // TZ 補正の BGAppRefresh ハンドラは起動時に必ず register する必要がある。
-        TimeZoneWatcher.shared.registerBackgroundTask()
+        // nonisolated static なので @main init() から呼べる。
+        TimeZoneWatcher.registerBackgroundTask()
     }
 
     var body: some Scene {
