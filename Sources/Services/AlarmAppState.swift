@@ -95,9 +95,10 @@ final class AlarmAppState: ObservableObject {
         // AlarmKit 側のアラート状態を stop する (音楽で置き換えるため)。stop は同期 throws。
         try? AlarmManager.shared.stop(id: item.id)
 
-        // 音楽再生開始
+        // 音楽再生開始 (フォルダの曲 + Apple Music ライブラリの選択曲)
         _ = audio.playRandom(
             folderRelPath: item.folderRelPath,
+            musicLibraryIDs: item.musicLibraryItemIDs,
             volume: item.volume,
             fadeInSeconds: item.fadeInSeconds
         )
