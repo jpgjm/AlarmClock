@@ -35,6 +35,9 @@ targets:
         # AlarmKit 権限リクエスト時に表示される説明文 (iOS 26+ 必須)
         NSAlarmKitUsageDescription: "指定時刻に目覚ましを鳴らすためにアラーム機能を使用します。"
 
+        # Apple Music ライブラリへの読み取り権限 (曲を選択して再生するため)
+        NSAppleMusicUsageDescription: "アラーム音源として端末に保存された音楽ライブラリの曲を再生します。"
+
         # ファイルアプリからアプリ Documents に音楽ファイルを配置できるようにする
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
