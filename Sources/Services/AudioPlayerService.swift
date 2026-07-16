@@ -13,6 +13,7 @@
 import AVFoundation
 import Combine
 import Foundation
+import MediaPlayer
 
 @MainActor
 final class AudioPlayerService: ObservableObject {
@@ -127,19 +128,72 @@ final class AudioPlayerService: ObservableObject {
         return out
     }
 
+    /// Apple Music ライブラリの persistentID 群から、再生可能な `assetURL` を解決する。
+    /// - 見つからない曲 (削除された等) は結果に含まれない。
+    /// - DRM 保護されたクラウド専用曲は `assetURL` が nil のためスキップ。
+    /// - iCloud/クラウドライブラリの曲でも「デバイスにダウンロード済み」なら URL が取れる。
+    func resolveLibraryAssetURLs(ids: [UInt64]) -> [URL] {
+        guard !ids.isEmpty else { return [] }
+        var out: [URL] = []
+        for id in ids {
+            let query = MPMediaQuery.songs()
+            query.addFilterPredicate(MPMediaPropertyPredicate(
+                value: NSNumber(value: id),
+                forProperty: MPMediaItemPropertyPersistentID
+            ))
+            if let item = query.items?.first, let url = item.assetURL {
+                out.append(url)
+            }
+        }
+        return out
+    }
+
+    /// persistentID から MPMediaItem を取得 (存在チェック / タイトル表示に使う)。
+    nonisolated static func mediaItem(for id: UInt64) -> MPMediaItem? {
+        let query = MPMediaQuery.songs()
+        query.addFilterPredicate(MPMediaPropertyPredicate(
+            value: NSNumber(value: id),
+            forProperty: MPMediaItemPropertyPersistentID
+        ))
+        return query.items?.first
+    }
+
+    /// Apple Music ライブラリへの読み取り権限。初回は許可ダイアログが出る。
+    static func requestMusicLibraryAuthorization() async -> MPMediaLibraryAuthorizationStatus {
+        return await withCheckedContinuation { cont in
+            MPMediaLibrary.requestAuthorization { status in
+                cont.resume(returning: status)
+            }
+        }
+    }
+
+    static var musicLibraryAuthorizationStatus: MPMediaLibraryAuthorizationStatus {
+        MPMediaLibrary.authorizationStatus()
+    }
+
     // MARK: - 再生制御
 
-    /// 指定フォルダの音楽をシャッフル → 連続再生。
-    /// - Returns: 再生対象のファイル数
+    /// 指定フォルダの音楽 + Apple Music ライブラリの選択曲をシャッフル → 連続再生。
+    /// - Parameters:
+    ///   - folderRelPath: Documents 配下のフォルダ (nil = 全体、空 = 全体)
+    ///   - musicLibraryIDs: Apple Music ライブラリの MPMediaEntityPersistentID 配列
+    /// - Returns: 実際に再生対象となったトラック数 (フォルダ + ライブラリ解決成功分の合計)
     @discardableResult
     func playRandom(folderRelPath: String?,
+                    musicLibraryIDs: [UInt64] = [],
                     volume: Double,
                     fadeInSeconds: Int) -> Int {
         stop()  // 既存再生を止める
 
-        var files = collectAudioFiles(folderRelPath: folderRelPath)
-        guard !files.isEmpty else { return 0 }
-        files.shuffle()
+        // フォルダの音楽ファイル URL
+        var urls = collectAudioFiles(folderRelPath: folderRelPath)
+
+        // Apple Music ライブラリの URL を解決して追加
+        // (ユーザーがライブラリから削除した曲は取得できないので、静かにスキップ)
+        urls.append(contentsOf: resolveLibraryAssetURLs(ids: musicLibraryIDs))
+
+        guard !urls.isEmpty else { return 0 }
+        urls.shuffle()
 
         do {
             try activateAudioSession()
@@ -147,7 +201,7 @@ final class AudioPlayerService: ObservableObject {
             debugPrint("AVAudioSession activate failed: \(error)")
         }
 
-        let items = files.map { AVPlayerItem(url: $0) }
+        let items = urls.map { AVPlayerItem(url: $0) }
         itemsBackup = items
         let player = AVQueuePlayer(items: items)
         player.actionAtItemEnd = .advance
