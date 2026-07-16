@@ -53,6 +53,44 @@ final class AudioPlayerService: ObservableObject {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
 
+    /// 初回起動時に `Documents/AlarmSound/` フォルダと README.txt を用意する。
+    /// フォルダが既に存在してもエラーにしない。README.txt はユーザーが書き換えた場合を
+    /// 尊重して、既に存在する場合は何もしない。
+    func ensureAlarmSoundFolder() {
+        let fm = FileManager.default
+        let folder = documentsURL().appendingPathComponent("AlarmSound", isDirectory: true)
+        do {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            debugPrint("Failed to create AlarmSound folder: \(error)")
+            return
+        }
+
+        let readme = folder.appendingPathComponent("README.txt")
+        if fm.fileExists(atPath: readme.path) { return }
+
+        let text = """
+        このフォルダに再生したいオーディオファイルを入れてください。
+
+        対応形式: .flac / .mp3 / .aac / .wav / .m4a
+        サブフォルダを作って整理しても構いません。フォルダ内 (再帰) からランダムに選ばれて再生されます。
+
+        アラーム発火時、ロック画面や Dynamic Island に「音楽で起きる」ボタンが表示されます。
+        そのボタンを押すとこのアプリが起動し、ここに入っているファイルからランダム再生が始まります。
+
+        ファイルの入れ方:
+          - iPhone/iPad の「ファイル」アプリで「このデバイス内」→「AlarmClock」→「AlarmSound」に置く
+          - AirDrop や LocalSend など、任意の転送手段で AlarmClock のフォルダに保存
+
+        このファイル (README.txt) は削除しても構いません。
+        """
+        do {
+            try text.write(to: readme, atomically: true, encoding: .utf8)
+        } catch {
+            debugPrint("Failed to write README.txt: \(error)")
+        }
+    }
+
     /// 指定フォルダ配下 (再帰) の対応音声ファイル URL 一覧。
     func collectAudioFiles(folderRelPath: String?) -> [URL] {
         let root = documentsURL()
