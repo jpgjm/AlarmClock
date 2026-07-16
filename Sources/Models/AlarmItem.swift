@@ -9,7 +9,7 @@
 //  スケジュール種別:
 //    - .weekly(days): 毎週指定曜日 (曜日繰り返し)  → AlarmKit .relative.weekly
 //    - .oneShotAt(date): 特定の日時 1 回のみ  → AlarmKit .fixed(Date)
-//        「明後日 7:00」もこれで表現する (デフォルト新規作成時に「明後日」候補)
+//        「明後日 7:00」もこれで表現できる (画面上「特定日1回」から選択)
 //
 
 import Foundation
@@ -64,20 +64,15 @@ struct AlarmItem: Codable, Identifiable, Equatable {
 
     // MARK: - Convenience
 
-    /// 新規作成時のデフォルト。明後日 07:00・スヌーズ有効。
-    /// PDF「あさってアラーム」の主題を踏まえて「明後日」プリセットを用意。
-    static func defaultDayAfterTomorrow(now: Date = Date(),
-                                        calendar: Calendar = .current) -> AlarmItem {
-        let dayAfterTomorrow = calendar.date(byAdding: .day, value: 2, to: now) ?? now
-        var comps = calendar.dateComponents([.year, .month, .day], from: dayAfterTomorrow)
-        comps.hour = 7
-        comps.minute = 0
-        let date = calendar.date(from: comps) ?? now
+    /// 新規作成時のデフォルト。毎日 07:00・ラベルなし・フォルダは "AlarmSound"・スヌーズ有効。
+    /// 種別は「曜日繰り返し」で全曜日 (毎日) を選択済み状態にする。
+    static func defaultForNewAlarm() -> AlarmItem {
         return AlarmItem(
             hour: 7,
             minute: 0,
-            schedule: .oneShotAt(date: date),
-            label: "明後日の起床"
+            schedule: .weekly(days: [1, 2, 3, 4, 5, 6, 7]),
+            label: "",
+            folderRelPath: "AlarmSound"
         )
     }
 
