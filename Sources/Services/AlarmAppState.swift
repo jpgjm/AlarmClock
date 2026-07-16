@@ -32,6 +32,9 @@ final class AlarmAppState: ObservableObject {
     // MARK: - Init / Bootstrap
 
     func bootstrap() async {
+        // Documents/AlarmSound/ と README.txt を用意 (存在すればスキップ)。
+        audio.ensureAlarmSoundFolder()
+
         alarms = storage.load()
 
         _ = await alarmService.ensureAuthorized()
