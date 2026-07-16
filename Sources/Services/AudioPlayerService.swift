@@ -233,7 +233,7 @@ final class AudioPlayerService: ObservableObject {
         }
 
         isPlaying = true
-        return files.count
+        return urls.count
     }
 
     private func handleItemEnd(_ note: Notification) {
