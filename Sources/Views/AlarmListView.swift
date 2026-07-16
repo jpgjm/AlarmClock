@@ -20,7 +20,7 @@ struct AlarmListView: View {
                     ContentUnavailableView {
                         Label("アラームがまだありません", systemImage: "alarm")
                     } description: {
-                        Text("右上の + から新しいアラームを追加できます。\n新規作成時は「明後日 7:00」が初期値です。")
+                        Text("右上の + から新しいアラームを追加できます。\n新規作成時は「毎日 7:00」が初期値です。")
                     }
                     .listRowBackground(Color.clear)
                 }
@@ -43,7 +43,7 @@ struct AlarmListView: View {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         isNew = true
-                        editingItem = AlarmItem.defaultDayAfterTomorrow()
+                        editingItem = AlarmItem.defaultForNewAlarm()
                     } label: {
                         Image(systemName: "plus")
                     }
