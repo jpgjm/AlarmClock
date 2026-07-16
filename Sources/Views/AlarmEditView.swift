@@ -27,6 +27,7 @@ struct AlarmEditView: View {
     @State private var oneShotDate: Date
     @State private var timeOfDay: Date
     @State private var showFolderPicker = false
+    @State private var showMusicPicker = false
     @State private var showDeleteConfirm = false
 
     private enum ScheduleKind: String, CaseIterable, Identifiable {
@@ -120,6 +121,56 @@ struct AlarmEditView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("Apple Music の曲 (\(draft.musicLibraryItemIDs.count)曲)") {
+                    // 選択済み一覧 (曲名は MPMediaLibrary から解決)
+                    ForEach(Array(draft.musicLibraryItemIDs.enumerated()), id: \.offset) { idx, pid in
+                        HStack {
+                            Image(systemName: "music.note")
+                                .foregroundStyle(.pink)
+                            VStack(alignment: .leading) {
+                                if let item = AudioPlayerService.mediaItem(for: pid) {
+                                    Text(item.title ?? "(タイトルなし)")
+                                        .lineLimit(1)
+                                    if let artist = item.artist, !artist.isEmpty {
+                                        Text(artist)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                } else {
+                                    Text("(見つかりません)")
+                                        .foregroundStyle(.red)
+                                        .lineLimit(1)
+                                    Text("ライブラリから削除された可能性")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                    .onDelete { indexSet in
+                        draft.musicLibraryItemIDs.remove(atOffsets: indexSet)
+                    }
+
+                    Button {
+                        Task { await presentMusicPicker() }
+                    } label: {
+                        Label("曲を追加…", systemImage: "plus.circle")
+                    }
+
+                    if !draft.musicLibraryItemIDs.isEmpty {
+                        Button(role: .destructive) {
+                            draft.musicLibraryItemIDs.removeAll()
+                        } label: {
+                            Text("すべて削除")
+                        }
+                    }
+
+                    Text("iOS の「ミュージック」アプリのライブラリから曲を選択します。フォルダ内音源と両方指定した場合は混ぜてランダム再生します。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("音量") {
                     Slider(value: $draft.volume, in: 0...1) {
                         Text("音量")
@@ -182,6 +233,16 @@ struct AlarmEditView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showMusicPicker) {
+                MusicLibraryPicker { items in
+                    // 追加された曲を merge (既存 ID と重複しないように)
+                    let existing = Set(draft.musicLibraryItemIDs)
+                    for item in items where !existing.contains(item.persistentID) {
+                        draft.musicLibraryItemIDs.append(item.persistentID)
+                    }
+                }
+                .ignoresSafeArea()
+            }
             .confirmationDialog("このアラームを削除しますか?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
                 Button("削除", role: .destructive) {
                     appState.delete(draft.id)
@@ -189,6 +250,26 @@ struct AlarmEditView: View {
                 }
                 Button("キャンセル", role: .cancel) { }
             }
+        }
+    }
+
+    /// Music ライブラリへのアクセス権限をリクエストしてから picker を出す。
+    private func presentMusicPicker() async {
+        let status = AudioPlayerService.musicLibraryAuthorizationStatus
+        switch status {
+        case .authorized:
+            showMusicPicker = true
+        case .notDetermined:
+            let newStatus = await AudioPlayerService.requestMusicLibraryAuthorization()
+            if newStatus == .authorized {
+                showMusicPicker = true
+            }
+        case .denied, .restricted:
+            // 拒否済み: ユーザーは設定アプリで許可し直す必要がある。
+            // ここで一度だけダイアログを出す設計もあるが、シンプルに何もしない。
+            debugPrint("Music library access denied")
+        @unknown default:
+            debugPrint("Music library authorization unknown state")
         }
     }
 
