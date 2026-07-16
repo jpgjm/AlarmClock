@@ -78,6 +78,13 @@ struct AlarmListView: View {
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
+                if !alarm.musicLibraryItemIDs.isEmpty {
+                    Label("Apple Music \(alarm.musicLibraryItemIDs.count)曲",
+                          systemImage: "music.note")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
             Spacer()
             Toggle("", isOn: Binding(
