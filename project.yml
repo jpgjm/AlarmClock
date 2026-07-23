@@ -1,0 +1,77 @@
+# xcodegen 用プロジェクト定義。
+# v7 は Apple 公式サンプル SchedulingAnAlarmWithAlarmKit と同等の最小構成 に寄せる。
+#
+# 変更点 (v6 → v7):
+#   - Widget Extension ターゲットを完全に削除 (SideStore で不整合を起こす可能性を排除)
+#   - Info.plist から NSSupportsLiveActivities / UIBackgroundModes / BGTaskSchedulerPermittedIdentifiers を削除
+#   - Sources/Shared / Sources/Widgets ディレクトリを削除
+#   - 音楽バックグラウンド再生は当面できないが、AlarmKit 発火時に自動で音楽再生する
+#     経路は AlarmAppState.checkAlerting() のまま維持 (アプリがフォアグラウンドの時)
+
+name: AlarmClock
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGN_IDENTITY: ""
+
+targets:
+  AlarmClock:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Sources/App
+      - path: Sources/Models
+      - path: Sources/Services
+      - path: Sources/Views
+    resources:
+      - path: Resources
+        excludes:
+          - Info.plist
+    info:
+      path: Resources/Info.plist
+      properties:
+        # AlarmKit 権限リクエスト時に表示される説明文。iOS 26+ 必須。
+        # Apple 公式サンプル SchedulingAnAlarmWithAlarmKit の Info.plist もこれ 1 つだけ。
+        NSAlarmKitUsageDescription: "指定時刻に目覚ましを鳴らすためにアラーム機能を使用します。"
+
+        # Apple Music ライブラリへの読み取り権限 (曲を選択して再生するため)
+        NSAppleMusicUsageDescription: "アラーム音源として端末に保存された音楽ライブラリの曲を再生します。"
+
+        # ファイルアプリからアプリ Documents に音楽ファイルを配置できるようにする
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+
+        # 表示名 / バンドル情報
+        CFBundleDisplayName: Alarm Clock
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        UILaunchScreen:
+          UIColorName: ""
+
+        # iPhone は portrait 縦のみ、iPad は 4 方向対応
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        "UISupportedInterfaceOrientations~ipad":
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.alarmclock
+        PRODUCT_NAME: AlarmClock
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        ENABLE_PREVIEWS: YES
