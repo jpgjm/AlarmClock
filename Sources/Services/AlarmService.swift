@@ -1,0 +1,207 @@
+//
+//  AlarmService.swift
+//  AlarmClock
+//
+//  AlarmKit の薄いラッパ。
+//    - 権限リクエスト (`AlarmManager.shared.requestAuthorization()`)
+//    - AlarmItem.Schedule → AlarmKit の Alarm.Schedule への変換
+//    - AlarmConfiguration の組み立て (Alert 用の secondary button = OpenAndPlayIntent)
+//    - スケジュール / 全削除 / 全再登録
+//
+//  スヌーズは AlarmKit の `.snooze` ボタン挙動を使うのではなく、二次アクションを
+//  「音楽で起きる (OpenAndPlayIntent)」に振っている。スヌーズはアプリ内画面 (RingingView)
+//  にボタンとして持ち、押下時に「N 分後の oneShotAt」でもう 1 件登録する。
+//
+
+import AlarmKit
+import ActivityKit
+import AppIntents
+import Foundation
+import SwiftUI
+
+/// カスタムメタデータを AlarmAttributes に付ける必要がある (AlarmKit の要件)。
+/// Countdown Presentation を使わないので基本空でよいが、Codable 実装の型が必要。
+struct AlarmClockMetadata: AlarmMetadata {}
+
+@MainActor
+final class AlarmService {
+    static let shared = AlarmService()
+
+    private let manager = AlarmManager.shared
+
+    // MARK: - 権限
+
+    /// 未リクエストなら権限ダイアログを出す。既に決定済みならその状態を返す。
+    /// - Returns: 認可されているかどうか
+    func ensureAuthorized() async -> Bool {
+        switch manager.authorizationState {
+        case .authorized:
+            return true
+        case .denied:
+            return false
+        case .notDetermined:
+            do {
+                let state = try await manager.requestAuthorization()
+                return state == .authorized
+            } catch {
+                return false
+            }
+        @unknown default:
+            return false
+        }
+    }
+
+    // MARK: - スケジュール
+
+    /// アプリ側の AlarmItem 一覧を AlarmKit にまるごと反映する。
+    /// 既存の AlarmKit 登録は「アプリで無効化された/削除された分」だけ解除する。
+    ///
+    /// v9: schedule() 内で毎回 prepared 音源を作り直すため、この呼び出しは
+    /// アプリ起動のたびに翌回のアラーム曲を再抽選する役割も担う。
+    func syncSchedule(with items: [AlarmItem]) async {
+        // 現状の登録一覧 (AlarmManager.alarms は throws プロパティ)
+        let existing = ((try? manager.alarms) ?? []).map { $0.id }
+        let desiredEnabled = items.filter { $0.enabled }
+        let desiredIds = Set(desiredEnabled.map { $0.id })
+
+        // 消えた or 無効化されたものを stop (stop は 同期 throws) + prepared 音源も掃除
+        for id in existing where !desiredIds.contains(id) {
+            try? manager.stop(id: id)
+            SoundLibraryService.shared.cleanupPreparedSound(alarmID: id)
+        }
+
+        // 有効なアラームを (idempotent に) 登録。
+        // schedule() の中で prepared 音源を毎回作り直すので、これが再抽選の起点になる。
+        for item in desiredEnabled {
+            do {
+                try await schedule(item)
+            } catch {
+                debugPrint("AlarmKit schedule failed for \(item.id): \(error)")
+            }
+        }
+    }
+
+    /// 1件を AlarmKit に登録。既存 ID があれば内部で置き換わる想定 (再登録 = 更新)。
+    /// AlarmManager.schedule は `async throws -> Alarm`、
+    /// AlarmManager.stop は同期 throws。
+    ///
+    /// カスタムサウンド:
+    ///   AlarmItem.customSoundName が nil でなければ、AlarmKit の `sound:` パラメータに
+    ///   `AlertConfiguration.AlertSound.named(fileName)` を渡す。
+    ///   ファイルの実体は SoundLibraryService が `Library/Sounds/` に保存済み。
+    ///   nil の場合は `.default` を明示的に渡す (通常システムアラーム音)。
+    func schedule(_ item: AlarmItem) async throws {
+        let alarmSchedule = Self.buildAlarmKitSchedule(from: item)
+
+        let stopButton = AlarmButton(
+            text: "止める",
+            textColor: .white,
+            systemImageName: "stop.circle.fill"
+        )
+        let musicButton = AlarmButton(
+            text: "音楽で起きる",
+            textColor: .white,
+            systemImageName: "music.note"
+        )
+
+        let alertPresentation = AlarmPresentation.Alert(
+            title: LocalizedStringResource(stringLiteral: item.label.isEmpty ? "アラーム" : item.label),
+            stopButton: stopButton,
+            secondaryButton: musicButton,
+            secondaryButtonBehavior: .custom
+        )
+        let presentation = AlarmPresentation(alert: alertPresentation)
+
+        let attributes = AlarmAttributes<AlarmClockMetadata>(
+            presentation: presentation,
+            tintColor: .orange
+        )
+
+        // カスタム音源の優先順位:
+        //   1. customSoundName が指定されていれば、それを直接再生
+        //   2. なければ folderRelPath (または Documents 直下) から 1 曲ランダム抽選して直接再生
+        //   3. 抽選対象が無ければ .default (システムアラーム音)
+        //
+        // 抽選は毎回 schedule() の直前に行う (syncSchedule() が bootstrap のたびに走ることで、
+        // アプリを起動するたびに翌回のアラーム曲が変わる)。
+        //
+        // WWDC25 Session 230: ファイルは Library/Sounds/ 配下に置く。
+        let soundConfig: AlertConfiguration.AlertSound
+        if let soundName = item.customSoundName, !soundName.isEmpty {
+            soundConfig = .named(soundName)
+        } else if let preparedName = SoundLibraryService.shared.prepareAlarmSound(
+            alarmID: item.id,
+            folderRelPath: item.folderRelPath
+        ) {
+            soundConfig = .named(preparedName)
+        } else {
+            soundConfig = .default
+        }
+
+        let configuration = AlarmManager.AlarmConfiguration<AlarmClockMetadata>(
+            countdownDuration: nil,
+            schedule: alarmSchedule,
+            attributes: attributes,
+            stopIntent: nil,
+            secondaryIntent: OpenAndPlayIntent(alarmID: item.id.uuidString),
+            sound: soundConfig
+        )
+
+        // schedule は戻り値 (Alarm) を返すが、こちらでは使わない。
+        _ = try await manager.schedule(id: item.id, configuration: configuration)
+    }
+
+    func cancel(id: UUID) {
+        try? manager.stop(id: id)
+        // アラーム削除時、動的抽選で作った prepared 音源も掃除する。
+        SoundLibraryService.shared.cleanupPreparedSound(alarmID: id)
+    }
+
+    func cancelAll() {
+        let current = (try? manager.alarms) ?? []
+        for a in current {
+            try? manager.stop(id: a.id)
+            SoundLibraryService.shared.cleanupPreparedSound(alarmID: a.id)
+        }
+    }
+
+    // MARK: - 変換
+
+    /// アプリの Schedule 表現 → AlarmKit の Alarm.Schedule。
+    ///
+    /// - .weekly(days): AlarmKit `.relative` + `.weekly([Locale.Weekday])`
+    /// - .oneShotAt(date): AlarmKit `.fixed(Date)`  (PDF 参照: UTC 絶対時刻)
+    private static func buildAlarmKitSchedule(from item: AlarmItem) -> Alarm.Schedule {
+        switch item.schedule {
+        case .weekly(let days):
+            let time = Alarm.Schedule.Relative.Time(
+                hour: item.hour,
+                minute: item.minute
+            )
+            // ISO 曜日 (1=月...7=日) → Locale.Weekday
+            let weekdays: [Locale.Weekday] = days.compactMap { d in
+                switch d {
+                case 1: return .monday
+                case 2: return .tuesday
+                case 3: return .wednesday
+                case 4: return .thursday
+                case 5: return .friday
+                case 6: return .saturday
+                case 7: return .sunday
+                default: return nil
+                }
+            }
+            let recurrence: Alarm.Schedule.Relative.Recurrence = weekdays.isEmpty
+                ? .never
+                : .weekly(weekdays)
+            return .relative(
+                Alarm.Schedule.Relative(time: time, repeats: recurrence)
+            )
+
+        case .oneShotAt(let date):
+            // AlarmKit `.fixed(Date)` は UTC 絶対時刻として保存される。
+            // TimeZoneWatcher が TZ 変更を検知したら再スケジュールをかける。
+            return .fixed(date)
+        }
+    }
+}
