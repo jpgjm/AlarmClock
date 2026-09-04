@@ -1,0 +1,153 @@
+# xcodegen 用プロジェクト定義。
+# CI で `xcodegen generate` を叩くと AlarmClock.xcodeproj が生成される。
+# ゆえに ios/*.xcodeproj や *.xcworkspace はコミット不要 (flutter create と同発想)。
+
+name: AlarmClock
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGN_IDENTITY: ""
+
+targets:
+  # LiveContainer のプロセスに読み込ませるハンドラ。
+  #
+  #   ゲストの**プロセス**を起こす道は 3 通り試して全滅した (前面でないと
+  #   NSExtension で拡張プロセスを起こせない)。残っているのは
+  #   「LiveContainer のプロセスにゲストのコードを読み込む」道。
+  #
+  #   【v48】アプリへの埋め込みをやめ、**独立した dylib** にした。
+  #     読み込みは LiveContainer の既存の Tweaks 機構が行う。
+  #     ユーザーが「調整をインポート」で Documents/Tweaks に置き、
+  #     設定「調整を LiveContainer 自身にも注入」を有効にする。
+  #
+  #     アプリに埋め込んだままだと、ゲスト起動時に同一プロセスへ
+  #     二重に読み込まれる (アプリ内蔵の分 + TweakLoader が注入する分)。
+  #
+  #     ホスト側は dlsym するだけになるので、本家に求める変更が
+  #     「Intent の宣言 + RTLD_DEFAULT からの呼び出し」だけで済む。
+  AlarmHandler:
+    type: library.dynamic
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Handler
+      # 抽選と履歴の実装。アプリ側と共有する。
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_NAME: AlarmHandler
+        # 既定の "lib" を付けさせない (libAlarmHandler.dylib になってしまう)。
+        EXECUTABLE_PREFIX: ""
+        EXECUTABLE_EXTENSION: dylib
+        MACH_O_TYPE: mh_dylib
+        # LiveContainer が dlsym で引くのでシンボルを削らせない。
+        DEAD_CODE_STRIPPING: NO
+        # Tweaks フォルダに単体で置かれる。
+        LD_DYLIB_INSTALL_NAME: "@loader_path/AlarmHandler.dylib"
+        # Swift ランタイムは OS 同梱のものを使う。
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: NO
+        SKIP_INSTALL: NO
+
+  AlarmClock:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Sources
+      # 抽選と履歴の実装。dylib 側と共有する。
+      # 【v48】dylib を埋め込まなくなったのでリンクでは共有できない。
+      #   同じソースを両方のターゲットでコンパイルする。
+      #   ファイルは 1 つのままなので、ルールが二重化することはない。
+      - path: Shared
+      # 【v50】ハンドラ本体もアプリ側に入れる。
+      #   直インストールでは LCGuestIntent がこのアプリ自身で解決されるので、
+      #   その perform() から AlarmHandlerCore を直接呼ぶ。
+      #   dylib 経由と同じコードが走るので、環境による差が出ない。
+      - path: Handler
+    resources:
+      - path: Resources
+        excludes:
+          - Info.plist
+    info:
+      path: Resources/Info.plist
+      properties:
+        # AlarmKit 権限リクエスト時に表示される説明文 (iOS 26+ 必須)
+        NSAlarmKitUsageDescription: "指定時刻に目覚ましを鳴らすためにアラーム機能を使用します。"
+
+        # Apple Music ライブラリへの読み取り権限 (曲を選択して再生するため)
+        NSAppleMusicUsageDescription: "アラーム音源として端末に保存された音楽ライブラリの曲を再生します。"
+
+        # ファイルアプリからアプリ Documents に音楽ファイルを配置できるようにする
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+
+        # バックグラウンド音楽再生 + BGAppRefresh (TZ 補正用)
+        UIBackgroundModes:
+          - audio
+          - fetch
+          - processing
+
+        # BGAppRefreshTask 識別子
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.example.alarmclock.tz-recheck
+
+        # 表示名 / バンドル情報
+        CFBundleDisplayName: Alarm Clock
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        UILaunchScreen:
+          UIColorName: ""
+
+        # iPhone は portrait 縦のみ、iPad は 4 方向対応 (Validate で警告が出ないように)
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        "UISupportedInterfaceOrientations~ipad":
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.alarmclock
+        PRODUCT_NAME: AlarmClock
+
+        TARGETED_DEVICE_FAMILY: "1,2"  # iPhone + iPad
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        ENABLE_PREVIEWS: YES
+
+# xcodegen は既定でスキームを生成しない。
+# `-derivedDataPath` は `-scheme` とセットでないと使えず、
+# `-target` との併用は
+#   error: The flag -scheme, -testProductsPath, or -xctestrun is required
+#          when specifying -derivedDataPath
+# で落ちる。そのため両方のスキームを明示する。
+schemes:
+  AlarmClock:
+    build:
+      targets:
+        AlarmClock: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+
+  # LiveContainer の Tweaks に置く dylib。アプリとは独立してビルドする。
+  AlarmHandler:
+    build:
+      targets:
+        AlarmHandler: all
+    run:
+      config: Debug
+    archive:
+      config: Release

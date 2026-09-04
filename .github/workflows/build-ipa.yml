@@ -1,0 +1,214 @@
+# AlarmClock build-ipa.yml
+# rev: 31 (成果物 3 点構成 / ArcBox rev2 と同じ命名・同じ流れ)
+#
+# 成果物は 3 つ。すべて JST のビルド時刻を頭に付ける。
+#   <stamp>_alarm-clock-ipa
+#   <stamp>_xcodebuild-log
+#   <stamp>_repository      … 中身は AlarmClock/ で包む
+# 例: 2026-08-12T17-13-40+09-00_alarm-clock-ipa.zip
+#
+# 時刻は最初のステップで 1 度だけ決め、3 つで同じ値を使う。
+# (ステップごとに date を呼ぶと数秒ずれて対応が取れなくなる)
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Set build timestamp (JST)
+        run: |
+          STAMP=$(TZ=Asia/Tokyo date +'%Y-%m-%dT%H-%M-%S+09-00')
+          echo "STAMP=$STAMP" >> "$GITHUB_ENV"
+          echo "Build stamp: $STAMP"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # xcodegen / xcodebuild より前に退避する。
+      # 後で取ると AlarmClock.xcodeproj や build/ が混ざる。
+      #
+      # AlarmClock/ で包むのは、展開先を間違えたときの事故を防ぐため。
+      # 包まないと ZIP の中身が展開したフォルダに直接ばら撒かれ、
+      # 既存の作業ディレクトリに重ねてしまう危険がある。
+      - name: Snapshot repository
+        run: |
+          mkdir -p /tmp/repo-snapshot/AlarmClock
+          rsync -a --exclude='.git' ./ /tmp/repo-snapshot/AlarmClock/
+          echo "=== snapshot ==="
+          find /tmp/repo-snapshot -type f | wc -l
+          du -sh /tmp/repo-snapshot
+          ls -a /tmp/repo-snapshot/AlarmClock
+
+      # ビルドが落ちても中身を確認できるよう always。
+      - name: Upload repository snapshot (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.STAMP }}_repository
+          path: /tmp/repo-snapshot
+          # .github/ や .gitignore を落とさないために必須。
+          # v4.4 以降は既定で隠しファイルが除外される。
+          include-hidden-files: true
+          if-no-files-found: error
+
+      # Xcode 26 (iOS 26 SDK) を選ぶ。なければ最新の Xcode をベストエフォートで採用し、
+      # そのバージョンをログに出す。 iOS 26 以降でないと AlarmKit がリンクできないので
+      # 「Verify Xcode 26+」ステップで厳密チェックする。
+      - name: Select newest Xcode available
+        run: |
+          echo "=== Available Xcodes ==="
+          ls -la /Applications | grep -i xcode || true
+          # 高いバージョンから順に試す
+          for X in $(ls /Applications | grep -E '^Xcode' | sort -V -r); do
+            APP="/Applications/$X/Contents/Developer"
+            if [ -d "$APP" ]; then
+              sudo xcode-select -s "$APP"
+              echo "Selected: $APP"
+              break
+            fi
+          done
+          xcodebuild -version
+
+      - name: Verify Xcode 26+ (AlarmKit requires iOS 26 SDK)
+        run: |
+          VERSION_LINE=$(xcodebuild -version | head -1)
+          echo "$VERSION_LINE"
+          MAJOR=$(echo "$VERSION_LINE" | awk '{print $2}' | awk -F. '{print $1}')
+          if [ -z "$MAJOR" ] || [ "$MAJOR" -lt 26 ]; then
+            echo "::error::Xcode 26 or newer is required (found: $VERSION_LINE)."
+            echo "::error::AlarmKit is not available in earlier Xcodes; build cannot proceed."
+            exit 1
+          fi
+
+      - name: Install xcodegen
+        run: |
+          brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          xcodegen generate
+          ls -la
+          test -d AlarmClock.xcodeproj && echo "OK" || (echo "xcodeproj not generated"; exit 1)
+
+      # continue-on-error は使わない。失敗したらここで止める。
+      # pipefail + tee でログは /tmp/xcodebuild.log に常時保存。
+      - name: Build (no codesign)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project AlarmClock.xcodeproj \
+            -scheme AlarmClock \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            2>&1 | tee /tmp/xcodebuild.log
+
+      - name: Show build log tail
+        if: always()
+        run: |
+          echo "=== Last 200 lines of xcodebuild log ==="
+          tail -200 /tmp/xcodebuild.log || true
+
+      # -derivedDataPath build を指定しているので出力先は固定。
+      # find で探す必要はない。
+      - name: Verify .app
+        run: |
+          APP="build/Build/Products/Release-iphoneos/AlarmClock.app"
+          test -d "$APP" || { echo "::error::$APP が生成されていません"; exit 1; }
+          test -f "$APP/AlarmClock" || { echo "::error::実行バイナリがありません"; exit 1; }
+          test -f "$APP/Info.plist" || { echo "::error::Info.plist がありません"; exit 1; }
+          file "$APP/AlarmClock"
+          ls -la "$APP"
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/AlarmClock.app Payload/
+          zip -qry alarm_clock.ipa Payload
+          rm -rf Payload
+          echo "=== IPA info ==="
+          ls -lh alarm_clock.ipa
+          unzip -l alarm_clock.ipa | tail -3
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.STAMP }}_alarm-clock-ipa
+          path: alarm_clock.ipa
+
+      # 【v48】LiveContainer のプロセスに読み込ませる dylib。
+      #
+      #   アプリには埋め込まない。ユーザーが LiveContainer の
+      #   「調整をインポート」で Documents/Tweaks に置き、
+      #   設定「調整を LiveContainer 自身にも注入」を有効にする。
+      #
+      #   アプリとは別ターゲットなので、AlarmClock スキームでは作られない。
+      #
+      #   `-target` と `-derivedDataPath` は併用できない。
+      #     error: The flag -scheme, -testProductsPath, or -xctestrun is
+      #            required when specifying -derivedDataPath
+      #   そのため project.yml に AlarmHandler スキームを定義して指定する。
+      - name: Build AlarmHandler.dylib
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project AlarmClock.xcodeproj \
+            -scheme AlarmHandler \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            2>&1 | tee -a /tmp/xcodebuild.log
+
+      - name: Verify dylib
+        run: |
+          DYLIB="build/Build/Products/Release-iphoneos/AlarmHandler.dylib"
+          test -f "$DYLIB" || {
+            echo "::error::$DYLIB が生成されていません"
+            ls -la build/Build/Products/Release-iphoneos/ || true
+            exit 1
+          }
+          file "$DYLIB"
+          echo "=== 公開シンボル ==="
+          # LiveContainer が dlsym で引く名前。ここに出ていなければ
+          # @_cdecl か DEAD_CODE_STRIPPING の設定を疑う。
+          nm -gU "$DYLIB" | grep -i "AlarmClockGuestPerform" || {
+            echo "::error::AlarmClockGuestPerform が公開されていません"
+            nm -gU "$DYLIB" | head -40
+            exit 1
+          }
+          cp "$DYLIB" ./AlarmHandler.dylib
+          ls -lh AlarmHandler.dylib
+
+      # 【v48a】アプリと dylib の両方のログが揃ってからアップロードする。
+      #   以前はアプリのビルド直後に上げていたため、dylib のビルドで何が
+      #   起きたかが artifact に残らなかった。
+      - name: Upload xcodebuild log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.STAMP }}_xcodebuild-log
+          path: /tmp/xcodebuild.log
+          if-no-files-found: warn
+
+      - name: Upload AlarmHandler.dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.STAMP }}_alarm-handler-dylib
+          path: AlarmHandler.dylib
+          if-no-files-found: error
